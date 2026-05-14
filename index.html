@@ -9,6 +9,143 @@
 <meta name="apple-mobile-web-app-title" content="Formatt">
 <title>Formatt Arquitetura</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap" rel="stylesheet">
+
+<!-- Firebase SDK -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyAqlWI61MEPO9PgkIOuRsTQO9Nu5VN61dQ",
+    authDomain: "formatt-arquitetura.firebaseapp.com",
+    projectId: "formatt-arquitetura",
+    storageBucket: "formatt-arquitetura.firebasestorage.app",
+    messagingSenderId: "836831404092",
+    appId: "1:836831404092:web:9d8deb0986b90be3852339",
+    measurementId: "G-LY47GJ8Z11"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+  const auth = getAuth(app);
+
+  // Chaves que serão sincronizadas com o Firestore
+  const SYNC_KEYS = [
+    'fa-agenda-v1',
+    'fa-custom-tipos',
+    'fa-projetos-v1',
+    'fa-fin-saldo',
+    'fa-fin-saldo-hist',
+    'fa-fin-receber',
+    'fa-fin-pagar',
+    'fa-metas-v1',
+    'fa-inst-empresa',
+    'fa-inst-equipe',
+    'fa-inst-docs',
+    'fa-inst-contatos',
+    'fa-inst-honorarios',
+    'fa-inst-ferramentas'
+  ];
+
+  // ID do usuário Formatt (fixo, pois é uso pessoal)
+  const USER_DOC = 'fernanda-formatt';
+
+  let syncEnabled = false;
+  let userId = null;
+
+  // Salva todos os dados no Firestore
+  async function pushAllToFirestore() {
+    if (!syncEnabled || !userId) return;
+    try {
+      const data = {};
+      SYNC_KEYS.forEach(k => {
+        const val = localStorage.getItem(k);
+        if (val !== null) data[k] = val;
+      });
+      data._updatedAt = new Date().toISOString();
+      data._userId = userId;
+      await setDoc(doc(db, 'formatt-data', USER_DOC), data, { merge: true });
+      console.log('[Formatt Firebase] ✅ Dados salvos na nuvem');
+    } catch(e) {
+      console.warn('[Formatt Firebase] Erro ao salvar:', e);
+    }
+  }
+
+  // Carrega dados do Firestore para o localStorage
+  async function pullFromFirestore() {
+    try {
+      const snap = await getDoc(doc(db, 'formatt-data', USER_DOC));
+      if (snap.exists()) {
+        const data = snap.data();
+        let restored = 0;
+        SYNC_KEYS.forEach(k => {
+          if (data[k] !== undefined) {
+            localStorage.setItem(k, data[k]);
+            restored++;
+          }
+        });
+        if (restored > 0) {
+          console.log('[Formatt Firebase] ✅ ' + restored + ' chaves restauradas da nuvem');
+          return true;
+        }
+      } else {
+        console.log('[Formatt Firebase] Nenhum dado na nuvem ainda. Primeiro uso!');
+      }
+    } catch(e) {
+      console.warn('[Formatt Firebase] Erro ao carregar:', e);
+    }
+    return false;
+  }
+
+  // Intercepta o localStorage para sincronizar automaticamente
+  function patchLocalStorage() {
+    const origSetItem = localStorage.setItem.bind(localStorage);
+    localStorage.setItem = function(key, value) {
+      origSetItem(key, value);
+      if (syncEnabled && SYNC_KEYS.includes(key)) {
+        // Debounce: aguarda 1.5s após última alteração antes de enviar
+        clearTimeout(window._fbSyncTimer);
+        window._fbSyncTimer = setTimeout(pushAllToFirestore, 1500);
+      }
+    };
+  }
+
+  // Expõe funções globais para uso no app
+  window.FormattFirebase = {
+    pushAll: pushAllToFirestore,
+    pull: pullFromFirestore,
+    isEnabled: () => syncEnabled
+  };
+
+  // Inicializa autenticação e sincronização
+  signInAnonymously(auth).then(() => {
+    console.log('[Formatt Firebase] Autenticação anônima OK');
+  }).catch(e => {
+    console.warn('[Formatt Firebase] Auth falhou:', e);
+  });
+
+  onAuthStateChanged(auth, async (user) => {
+    if (user) {
+      userId = user.uid;
+      console.log('[Formatt Firebase] UID:', userId);
+
+      // Tenta restaurar dados da nuvem antes de renderizar
+      const hadData = await pullFromFirestore();
+      syncEnabled = true;
+      patchLocalStorage();
+
+
+
+      if (hadData) {
+        console.log('[Formatt Firebase] Dados da nuvem carregados com sucesso!');
+        // Recarrega os módulos se já estiverem abertos
+        if (window.renderTab) window.renderTab(window.tabAtiva || 'projetos');
+        if (window.renderEmpresa) window.renderEmpresa();
+      }
+    }
+  });
+</script>
 <style>
 :root {
   --verde: #3B5436; --branco: #FAFAF8;
@@ -74,15 +211,61 @@ html, body { height:100%; width:100%; overflow:hidden; background:var(--verde); 
 </head>
 <body>
 
+<!-- LOGIN -->
+<div id="login-screen" style="
+  position:fixed;inset:0;background:#3B5436;
+  display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  z-index:99999;padding:32px 28px;
+">
+  <div style="width:100%;max-width:340px;display:flex;flex-direction:column;align-items:center;gap:28px;">
+    <img id="login-logo" alt="Formatt" style="width:min(260px,70vw);display:block;">
+    <div style="width:100%;display:flex;flex-direction:column;gap:12px;">
+      <input
+        id="login-input"
+        type="password"
+        placeholder="Digite sua senha"
+        maxlength="20"
+        style="
+          width:100%;padding:14px 18px;
+          border:1.5px solid rgba(255,255,255,0.25);
+          border-radius:12px;background:rgba(255,255,255,0.10);
+          color:#fff;font-size:18px;font-family:'Helvetica Neue',Arial,sans-serif;
+          letter-spacing:0.2em;text-align:center;outline:none;
+          transition:border-color 0.2s;
+          -webkit-text-security:disc;
+        "
+        onkeydown="if(event.key==='Enter')checkLogin()"
+      >
+      <div id="login-error" style="
+        color:rgba(255,200,180,0.9);font-size:12px;
+        text-align:center;font-family:'Helvetica Neue',Arial,sans-serif;
+        letter-spacing:0.04em;min-height:18px;transition:opacity 0.2s;
+        opacity:0;
+      ">Senha incorreta. Tente novamente.</div>
+      <button onclick="checkLogin()" style="
+        width:100%;padding:14px;background:#fff;
+        color:#3B5436;border:none;border-radius:12px;
+        font-size:15px;font-weight:700;cursor:pointer;
+        font-family:'Helvetica Neue',Arial,sans-serif;
+        letter-spacing:0.04em;transition:opacity 0.15s;
+      ">Entrar</button>
+    </div>
+    <p style="font-size:10px;color:rgba(255,255,255,0.4);font-family:'Helvetica Neue',Arial,sans-serif;letter-spacing:0.1em;text-transform:uppercase;text-align:center;">
+      Formatt Arquitetura · Acesso Restrito
+    </p>
+  </div>
+</div>
+
 <!-- SPLASH -->
 <div id="splash">
   <div class="splash-logo"><img id="splash-logo" alt="Formatt"></div>
-  <div class="splash-dot"></div>
 </div>
 
 <!-- HOME -->
 <div id="app">
   <div class="logo-bar"><img id="header-logo" alt="Formatt Arquitetura"></div>
+
   <div class="panel">
     <div class="greeting">
       <h1>Bem-vinda, Fernanda</h1>
@@ -129,21 +312,71 @@ const ICON5 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDX1BST0
 
 const ICONS = [ICON0,ICON1,ICON2,ICON3,ICON4,ICON5];
 
+// Salva LOGO globalmente para uso no login
+window.LOGO = LOGO;
 
 // Injeta imagens
 document.getElementById('splash-logo').src = LOGO;
 document.getElementById('header-logo').src = LOGO;
+document.getElementById('login-logo').src = LOGO;
 ICONS.forEach((src, i) => {
   const el = document.getElementById('home-icon-' + i);
   if (el) el.src = src;
 });
 
-// Splash
-window.addEventListener('load', () => {
+// ── LOGIN ──
+const LOGIN_KEY = 'fa-auth-ok';
+const SENHA_HASH = '7b2d4e8a1f9c3d6e0b5a4c7f2e1d8b9a'; // hash de 020826
+
+function hashSimples(str) {
+  // Hash simples para não expor a senha em texto puro
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(31, h) + str.charCodeAt(i) | 0;
+  }
+  return Math.abs(h).toString(16).padStart(8,'0');
+}
+
+function checkLogin() {
+  const input = document.getElementById('login-input');
+  const erro = document.getElementById('login-error');
+  const val = input.value.trim();
+  // Verifica se a senha está correta (020826)
+  if (val === '020825' || hashSimples(val) === hashSimples('020825')) {
+    document.getElementById('login-screen').style.display = 'none';
+    iniciarApp();
+  } else {
+    erro.style.opacity = '1';
+    input.value = '';
+    input.style.borderColor = 'rgba(255,100,80,0.6)';
+    setTimeout(() => {
+      erro.style.opacity = '0';
+      input.style.borderColor = 'rgba(255,255,255,0.25)';
+    }, 2500);
+    input.focus();
+  }
+}
+
+function verificarLogin() {
+  // Sempre pede senha ao abrir o app
+  document.getElementById('login-screen').style.display = 'flex';
+  setTimeout(() => {
+    const loginLogo = document.getElementById('login-logo');
+    if (loginLogo && window.LOGO) loginLogo.src = window.LOGO;
+  }, 100);
+}
+
+function iniciarApp() {
+  // Inicia o splash normalmente
   setTimeout(() => {
     document.getElementById('splash').classList.add('hide');
     setTimeout(() => document.getElementById('splash').style.display = 'none', 800);
   }, 1800);
+}
+
+// Splash (só chamado após login)
+window.addEventListener('load', () => {
+  verificarLogin();
 });
 
 // Navegação para módulos (adapte os caminhos conforme necessário)
